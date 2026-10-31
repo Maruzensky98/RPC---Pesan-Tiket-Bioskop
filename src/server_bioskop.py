@@ -5,6 +5,7 @@ Variabel lingkungan (opsional, untuk eksperimen laporan):
   MAX_WORKERS   jumlah thread server (default 10)
   USE_LOCK      "1" memakai lock (default), "0" untuk membuktikan race condition
   RACE_DELAY    jeda (detik) antara cek dan tulis kursi, memperbesar peluang race
+  ADMIN_TOKEN   kata sandi admin (default "admin123"; GANTI untuk demo sungguhan)
   SLOW_REPLY    peluang (0-1) balasan ditunda 3 detik SETELAH data tersimpan,
                 untuk menguji retry + deduplikasi
 """
@@ -13,6 +14,7 @@ import queue
 import random
 import threading
 import time
+from datetime import datetime
 from concurrent import futures
 from contextlib import nullcontext
 
@@ -32,7 +34,8 @@ def data_awal():
 
 
 class LayananBioskop(pb_grpc.LayananBioskopServicer):
-    def __init__(self, use_lock=True, race_delay=0.0, slow_reply=0.0):
+    def __init__(self, use_lock=True, race_delay=0.0, slow_reply=0.0,
+                 admin_token="admin123", verbose=False):
         self.kursi = data_awal()          # jadwal -> kode -> pemesan / None
         self.proses = {}                  # request_id -> response (deduplikasi)
         self.lock = threading.Lock()      # satu lock global; lihat README untuk alasannya
@@ -41,8 +44,19 @@ class LayananBioskop(pb_grpc.LayananBioskopServicer):
         self.slow_reply = slow_reply
         self.subscribers = {}             # jadwal -> daftar queue
         self.sub_lock = threading.Lock()
+        self.admin_token = admin_token
+        self.verbose = verbose
 
     # ---------- util ----------
+    def _log(self, teks):
+        if self.verbose:
+            print(f"[{datetime.now():%H:%M:%S}] {teks}", flush=True)
+
+    def _cek_admin(self, token, context):
+        if token != self.admin_token:
+            self._log("ADMIN ditolak: token salah")
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "Token admin salah")
+
     def _kunci(self):
         return self.lock if self.use_lock else nullcontext()
 
@@ -81,6 +95,7 @@ class LayananBioskop(pb_grpc.LayananBioskopServicer):
         self._validasi(request.jadwal_id, request.kode_kursi, context)
         with self._kunci():
             if request.request_id in self.proses:        # duplikat -> hasil lama
+                self._log(f"DUPLIKAT {request.pemesan} pesan {request.kode_kursi} (hasil lama dikirim ulang)")
                 return self.proses[request.request_id]
             kursi = self.kursi[request.jadwal_id]
             if kursi[request.kode_kursi] is not None:
@@ -92,6 +107,7 @@ class LayananBioskop(pb_grpc.LayananBioskopServicer):
                 hasil = pb.PesanResponse(sukses=True, pesan="Berhasil")
                 self._umumkan(request.jadwal_id, request.kode_kursi, request.pemesan)
             self.proses[request.request_id] = hasil
+            self._log(f"{request.pemesan} PESAN {request.jadwal_id}/{request.kode_kursi}: {hasil.pesan}")
         self._balas_lambat()
         return hasil
 
@@ -99,6 +115,7 @@ class LayananBioskop(pb_grpc.LayananBioskopServicer):
         self._validasi(request.jadwal_id, request.kode_kursi, context)
         with self._kunci():
             if request.request_id in self.proses:
+                self._log(f"DUPLIKAT {request.pemesan} batal {request.kode_kursi} (hasil lama dikirim ulang)")
                 return self.proses[request.request_id]
             kursi = self.kursi[request.jadwal_id]
             if kursi[request.kode_kursi] is None:
@@ -110,8 +127,40 @@ class LayananBioskop(pb_grpc.LayananBioskopServicer):
                 hasil = pb.PesanResponse(sukses=True, pesan="Pesanan dibatalkan")
                 self._umumkan(request.jadwal_id, request.kode_kursi, None)
             self.proses[request.request_id] = hasil
+            self._log(f"{request.pemesan} BATAL {request.jadwal_id}/{request.kode_kursi}: {hasil.pesan}")
         self._balas_lambat()
         return hasil
+
+    def AdminBatalPesan(self, request, context):
+        self._cek_admin(request.admin_token, context)
+        self._validasi(request.jadwal_id, request.kode_kursi, context)
+        with self._kunci():
+            if request.request_id in self.proses:
+                return self.proses[request.request_id]
+            kursi = self.kursi[request.jadwal_id]
+            pemesan = kursi[request.kode_kursi]
+            if pemesan is None:
+                hasil = pb.PesanResponse(sukses=False, pesan="Kursi belum dipesan")
+            else:
+                kursi[request.kode_kursi] = None
+                hasil = pb.PesanResponse(sukses=True, pesan=f"Pesanan {pemesan} dibatalkan oleh admin")
+                self._umumkan(request.jadwal_id, request.kode_kursi, None)
+            self.proses[request.request_id] = hasil
+            self._log(f"ADMIN BATAL {request.jadwal_id}/{request.kode_kursi}: {hasil.pesan}")
+        return hasil
+
+    def AdminResetJadwal(self, request, context):
+        self._cek_admin(request.admin_token, context)
+        if request.jadwal_id not in self.kursi:
+            context.abort(grpc.StatusCode.NOT_FOUND, "Jadwal tidak ada")
+        with self._kunci():
+            kursi = self.kursi[request.jadwal_id]
+            terisi = [k for k, v in kursi.items() if v is not None]
+            for k in terisi:
+                kursi[k] = None
+                self._umumkan(request.jadwal_id, k, None)
+            self._log(f"ADMIN RESET {request.jadwal_id}: {len(terisi)} kursi dikosongkan")
+        return pb.PesanResponse(sukses=True, pesan=f"{len(terisi)} kursi dikosongkan")
 
     def StreamStatusKursi(self, request, context):
         if request.jadwal_id not in self.kursi:
@@ -146,6 +195,8 @@ if __name__ == "__main__":
         use_lock=env("USE_LOCK", "1") == "1",
         race_delay=float(env("RACE_DELAY", "0")),
         slow_reply=float(env("SLOW_REPLY", "0")),
+        admin_token=env("ADMIN_TOKEN", "admin123"),
+        verbose=True,
     )
     server.start()
     print(f"Server bioskop berjalan di port {port} "

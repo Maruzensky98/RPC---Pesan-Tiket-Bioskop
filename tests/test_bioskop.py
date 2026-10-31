@@ -71,6 +71,32 @@ class TesDenganLock(Dasar):
             stream.cancel()
 
 
+class TesAdmin(Dasar):
+    def stub_call(self, nama_rpc, req):
+        with grpc.insecure_channel(self.alamat) as ch:
+            return getattr(pb_grpc.LayananBioskopStub(ch), nama_rpc)(req, timeout=5)
+
+    def test_admin_batal_pesanan_orang_lain(self):
+        self.pesan("E1", "andi")
+        r = self.stub_call("AdminBatalPesan", pb.AdminBatalRequest(
+            request_id=str(uuid.uuid4()), admin_token="admin123", jadwal_id="J1", kode_kursi="E1"))
+        self.assertTrue(r.sukses)
+        self.assertTrue(self.pesan("E1", "sari").sukses)   # kursi bebas lagi
+
+    def test_admin_token_salah_ditolak(self):
+        with self.assertRaises(grpc.RpcError) as c:
+            self.stub_call("AdminBatalPesan", pb.AdminBatalRequest(
+                request_id=str(uuid.uuid4()), admin_token="salah", jadwal_id="J1", kode_kursi="E1"))
+        self.assertEqual(c.exception.code(), grpc.StatusCode.PERMISSION_DENIED)
+
+    def test_admin_reset_jadwal(self):
+        self.pesan("F1", "andi"); self.pesan("F2", "sari")
+        r = self.stub_call("AdminResetJadwal", pb.AdminResetRequest(
+            admin_token="admin123", jadwal_id="J1"))
+        self.assertEqual(r.pesan, "2 kursi dikosongkan")
+        self.assertTrue(self.pesan("F1", "budi").sukses)
+
+
 class TesTanpaLock(Dasar):
     use_lock = False
     race_delay = 0.05

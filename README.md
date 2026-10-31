@@ -2,9 +2,7 @@
 
 Proyek Mini Komputasi Paralel dan Terdistribusi (Studi Kasus 1).
 
-**Kelompok:** (isi) | **Anggota:**
-1. Ginanjar Abdul Hakim (247006111159)
-2. Luthfi Apriliansyah (247006111165)
+**Kelompok:** (isi) | **Anggota:** (nama, NIM)
 
 Demo dijalankan pada **2 laptop fisik**: Laptop A sebagai server, Laptop B sebagai client.
 
@@ -12,10 +10,11 @@ Demo dijalankan pada **2 laptop fisik**: Laptop A sebagai server, Laptop B sebag
 
 ```
 bioskop-rpc/
-├── proto/bioskop.proto        # kontrak layanan (IDL), 4 RPC
+├── proto/bioskop.proto        # kontrak layanan (IDL), 6 RPC
 ├── src/
 │   ├── server_bioskop.py      # server (lock, deduplikasi, streaming)
 │   ├── client_bioskop.py      # client interaktif (timeout, retry, request_id)
+│   ├── admin_bioskop.py       # program admin (denah + nama pemesan, batal paksa, reset)
 │   └── loadtest.py            # uji race condition dan kinerja
 ├── tests/test_bioskop.py      # tes otomatis (server dan client di satu laptop)
 ├── docs/                      # laporan, diagram, screenshot
@@ -69,6 +68,37 @@ Perintah di client: `lihat`, `pesan A5`, `batal A5`, `keluar`.
 Saat satu client memesan kursi, terminal client lain langsung menampilkan baris
 `[LIVE] A5 -> terpesan andi` (server streaming).
 
+### Admin
+
+Admin menjalankan `admin_bioskop.py`, bisa di laptop server (pakai `localhost`) atau laptop lain:
+```bash
+python src/admin_bioskop.py --server localhost:50051 --token admin123
+```
+
+| Perintah | Fungsi |
+|---|---|
+| `denah` | Denah kursi, jumlah terisi, dan daftar kursi beserta nama pemesannya |
+| `batal A5` | Batalkan pesanan kursi A5 milik siapa pun |
+| `reset` | Kosongkan semua kursi pada jadwal (meminta konfirmasi `y`) |
+| `keluar` | Keluar |
+
+Admin juga menerima log live (`[10:32:05] A5 dipesan oleh andi`) lewat server streaming.
+Terminal **server** juga mencetak log setiap aksi:
+```
+[10:32:05] andi PESAN J1/A5: Berhasil
+[10:32:06] sari PESAN J1/A5: Kursi sudah dipesan
+[10:32:40] ADMIN BATAL J1/A5: Pesanan andi dibatalkan oleh admin
+```
+
+Kata sandi admin diatur lewat `ADMIN_TOKEN` saat menjalankan server, dan admin memakai
+`--token` yang sama. Default-nya `admin123`, sebaiknya diganti:
+```bash
+ADMIN_TOKEN=rahasia python src/server_bioskop.py                      # Linux/macOS
+$env:ADMIN_TOKEN="rahasia"; python src/server_bioskop.py              # Windows PowerShell
+python src/admin_bioskop.py --server <IP>:50051 --token rahasia
+```
+Token yang salah ditolak server dengan `PERMISSION_DENIED`.
+
 Untuk uji coba cepat di satu laptop saja, cukup pakai `localhost:50051`.
 
 ## 4. Pengujian
@@ -88,8 +118,9 @@ python src/loadtest.py kinerja --server 192.168.1.10:50051 --clients 1 5 20
   (bahan tabel dan grafik laporan). Jalankan dari laptop client supaya CPU server tidak
   dibagi dengan program uji.
 
-> Restart server di Laptop A sebelum mengulang uji `race`, karena kursi yang sudah
-> terpesan tidak otomatis kosong lagi.
+> Sebelum mengulang uji `race`, kosongkan kursinya lewat admin (`reset` pada jadwal J2,
+> jalankan admin dengan `--jadwal J2`) atau restart server. Uji `race` memakai jadwal J2
+> kursi A5, sedangkan uji `kinerja` memakai jadwal J1.
 
 ### Eksperimen untuk laporan (jalankan di Laptop A)
 
@@ -118,5 +149,8 @@ Windows PowerShell: `$env:USE_LOCK="0"; $env:RACE_DELAY="0.05"; python src/serve
 - **Toleransi kegagalan:** client memakai timeout 2 detik dan retry exponential backoff
   (hanya untuk `DEADLINE_EXCEEDED` dan `UNAVAILABLE`) dengan `request_id` tetap.
   Server menyimpan hasil per `request_id` sehingga retry tidak memesan dua kali (at-most-once).
+- **Admin:** RPC `AdminBatalPesan` dan `AdminResetJadwal` dilindungi token. Token dikirim
+  tanpa enkripsi (`insecure_channel`), jadi cocok untuk jaringan lokal saja. Pada sistem
+  nyata gunakan TLS (`grpc.ssl_channel_credentials`) dan autentikasi yang lebih kuat.
 - **Keterbatasan:** data dan tabel `proses` ada di memori, hilang saat server restart.
   Perbaikan: simpan ke database atau file.

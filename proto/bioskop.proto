@@ -7,6 +7,10 @@ service LayananBioskop {
   rpc PesanKursi (PesanRequest) returns (PesanResponse);                   // unary, dilindungi request_id
   rpc BatalPesan (BatalRequest) returns (PesanResponse);                   // unary, dilindungi request_id
   rpc StreamStatusKursi (JadwalRequest) returns (stream PerubahanKursi);   // server streaming
+
+  // ---- khusus admin (butuh admin_token) ----
+  rpc AdminBatalPesan (AdminBatalRequest) returns (PesanResponse);         // batalkan pesanan siapa pun
+  rpc AdminResetJadwal (AdminResetRequest) returns (PesanResponse);        // kosongkan semua kursi satu jadwal
 }
 
 message JadwalRequest { string jadwal_id = 1; }
@@ -43,4 +47,16 @@ message PerubahanKursi {
   string kode = 2;
   string status = 3;
   string pemesan = 4;
+}
+
+message AdminBatalRequest {
+  string request_id = 1;
+  string admin_token = 2;
+  string jadwal_id = 3;
+  string kode_kursi = 4;
+}
+
+message AdminResetRequest {
+  string admin_token = 1;
+  string jadwal_id = 2;
 }
