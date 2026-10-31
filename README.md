@@ -5,6 +5,7 @@ Proyek Mini Komputasi Paralel dan Terdistribusi (Studi Kasus 1).
 **Kelompok:** (isi) | **Anggota:**
 Ginanjar Abdul Hakim (247006111159)
 Luthfi Apriliansyah (247006111165)
+
 Demo dijalankan pada **2 laptop fisik**: Laptop A sebagai server, Laptop B sebagai client.
 
 ## Struktur folder
